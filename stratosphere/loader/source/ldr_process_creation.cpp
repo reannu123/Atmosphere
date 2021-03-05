@@ -534,6 +534,9 @@ namespace ams::ldr {
                 std::memset(reinterpret_cast<void *>(map_address + ro_end),   0, nso_header->rw_dst_offset - ro_end);
                 std::memset(reinterpret_cast<void *>(map_address + rw_end), 0, nso_header->bss_size);
 
+                /* Apply embedded patches. */
+                ApplyEmbeddedPatchesToModule(nso_header->build_id, map_address, nso_size);
+
                 /* Apply IPS patches. */
                 LocateAndApplyIpsPatchesToModule(nso_header->build_id, map_address, nso_size);
             }
@@ -654,7 +657,7 @@ namespace ams::ldr {
             fssystem::DestroyExternalCode(loc.program_id);
 
             /* Note that we've created the program. */
-            SetLaunchedProgram(loc.program_id);
+            SetLaunchedBootProgram(loc.program_id);
 
             /* Move the process handle to output. */
             *out = info.process_handle.Move();

@@ -34,7 +34,6 @@ namespace ams::boot2 {
         constexpr size_t NumPreSdCardLaunchPrograms = util::size(PreSdCardLaunchPrograms);
 
         constexpr ncm::SystemProgramId AdditionalLaunchPrograms[] = {
-            ncm::SystemProgramId::Tma,         /* tma */
             ncm::SystemProgramId::Am,          /* am */
             ncm::SystemProgramId::NvServices,  /* nvservices */
             ncm::SystemProgramId::NvnFlinger,  /* nvnflinger */
@@ -80,7 +79,6 @@ namespace ams::boot2 {
         constexpr size_t NumAdditionalLaunchPrograms = util::size(AdditionalLaunchPrograms);
 
         constexpr ncm::SystemProgramId AdditionalMaintenanceLaunchPrograms[] = {
-            ncm::SystemProgramId::Tma,         /* tma */
             ncm::SystemProgramId::Am,          /* am */
             ncm::SystemProgramId::NvServices,  /* nvservices */
             ncm::SystemProgramId::NvnFlinger,  /* nvnflinger */
@@ -188,6 +186,12 @@ namespace ams::boot2 {
             return force_maintenance != 0;
         }
 
+        bool IsHtcEnabled() {
+            u8 enable_htc = 1;
+            settings::fwdbg::GetSettingsItemValue(&enable_htc, sizeof(enable_htc), "atmosphere", "enable_htc");
+            return enable_htc != 0;
+        }
+
         bool IsMaintenanceMode() {
             /* Contact set:sys, retrieve boot!force_maintenance. */
             if (IsForceMaintenance()) {
@@ -238,7 +242,7 @@ namespace ams::boot2 {
                 /* Read the mitm list off the SD card. */
                 {
                     char path[fs::EntryNameLengthMax];
-                    std::snprintf(path, sizeof(path), "sdmc:/atmosphere/contents/%016lx/mitm.lst", static_cast<u64>(program_id));
+                    util::SNPrintf(path, sizeof(path), "sdmc:/atmosphere/contents/%016lx/mitm.lst", static_cast<u64>(program_id));
 
                     fs::FileHandle f;
                     if (R_FAILED(fs::OpenFile(&f, path, fs::OpenMode_Read))) {
@@ -294,13 +298,17 @@ namespace ams::boot2 {
         void LaunchFlaggedProgramsOnSdCard() {
             IterateOverFlaggedProgramsOnSdCard([](ncm::ProgramId program_id) {
                 /* Check if we've already launched the program. */
-                if (pm::info::HasLaunchedProgram(program_id)) {
+                if (pm::info::HasLaunchedBootProgram(program_id)) {
                     return;
                 }
 
                 /* Launch the program. */
                 LaunchProgram(nullptr, ncm::ProgramLocation::Make(program_id, ncm::StorageId::None), 0);
             });
+        }
+
+        bool IsUsbRequiredToMountSdCard() {
+            return hos::GetVersion() >= hos::Version_9_0_0;
         }
 
     }
@@ -343,8 +351,10 @@ namespace ams::boot2 {
             /* Launch pcv. */
             LaunchProgram(nullptr, ncm::ProgramLocation::Make(ncm::SystemProgramId::Pcv, ncm::StorageId::BuiltInSystem), 0);
 
-            /* Launch usb. */
-            LaunchProgram(nullptr, ncm::ProgramLocation::Make(ncm::SystemProgramId::Usb, ncm::StorageId::BuiltInSystem), 0);
+            /* On 9.0.0+, FS depends on the USB sysmodule having been launched in order to mount the SD card. */
+            if (IsUsbRequiredToMountSdCard()) {
+                LaunchProgram(nullptr, ncm::ProgramLocation::Make(ncm::SystemProgramId::Usb, ncm::StorageId::BuiltInSystem), 0);
+            }
         }
 
         /* Wait for the SD card required services to be ready. */
@@ -367,6 +377,11 @@ namespace ams::boot2 {
     void LaunchPostSdCardBootPrograms() {
         /* This code is normally run by boot2. */
 
+        /* Launch the usb system module, if we haven't already. */
+        if (!IsUsbRequiredToMountSdCard()) {
+            LaunchProgram(nullptr, ncm::ProgramLocation::Make(ncm::SystemProgramId::Usb, ncm::StorageId::BuiltInSystem), 0);
+        }
+
         /* Find out whether we are maintenance mode. */
         const bool maintenance = IsMaintenanceMode();
         if (maintenance) {
@@ -378,6 +393,13 @@ namespace ams::boot2 {
 
         /* Check for and forward declare non-atmosphere mitm modules. */
         DetectAndDeclareFutureMitms();
+
+        /* Device whether to launch tma or htc. */
+        if (svc::IsKernelMesosphere() && IsHtcEnabled()) {
+            LaunchProgram(nullptr, ncm::ProgramLocation::Make(ncm::SystemProgramId::Htc, ncm::StorageId::None), 0);
+        } else {
+            LaunchProgram(nullptr, ncm::ProgramLocation::Make(ncm::SystemProgramId::Tma, ncm::StorageId::BuiltInSystem), 0);
+        }
 
         /* Launch additional programs. */
         if (maintenance) {
